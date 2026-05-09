@@ -6,6 +6,7 @@ Run this file to start the assistant: python main.py
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
+from langchain_core.messages import HumanMessage, AIMessage
 from agent import build_agent
 
 console = Console()
@@ -21,7 +22,7 @@ def is_dangerous(text: str) -> bool:
 def main():
     console.print(Panel.fit(
         "🤖 [bold cyan]Personal AI Assistant[/bold cyan]\n"
-        "[dim]Powered by Llama 3.1 — Running 100% Locally[/dim]\n\n"
+        "[dim]Powered by Ollama (functionary-7b-v1) — 100% Local & Private[/dim]\n\n"
         "Type [bold green]'voice'[/bold green] to switch to voice input\n"
         "Type [bold red]'exit'[/bold red] to quit",
         border_style="cyan"
@@ -65,12 +66,17 @@ def main():
 
             # Run the agent
             with console.status("[cyan]🤔 Thinking...[/cyan]"):
+                # langgraph expects input as messages
                 response = agent.invoke({
-                    "input": user_input,
-                    "chat_history": chat_history
+                    "messages": chat_history + [HumanMessage(user_input)]
                 })
 
-            answer = response["output"]
+            # Extract the response (langgraph returns in different format)
+            if isinstance(response, dict) and "messages" in response:
+                last_message = response["messages"][-1]
+                answer = last_message.content if hasattr(last_message, 'content') else str(last_message)
+            else:
+                answer = str(response)
             console.print(Panel(
                 answer,
                 title="[bold cyan]🤖 Assistant[/bold cyan]",
@@ -79,8 +85,8 @@ def main():
             console.print()
 
             # Update conversation memory
-            chat_history.append(("human", user_input))
-            chat_history.append(("assistant", answer))
+            chat_history.append(HumanMessage(user_input))
+            chat_history.append(AIMessage(answer))
 
             # Keep only last 10 exchanges to avoid context overflow
             if len(chat_history) > 20:

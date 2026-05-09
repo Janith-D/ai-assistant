@@ -1,10 +1,12 @@
 """
-Agent Core - LangChain agent with tool calling via Ollama
+Agent Core - LangChain agent with tool calling via Ollama (Local, 100% Private)
 """
 
 from langchain_ollama import ChatOllama
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain_core.prompts import ChatPromptTemplate
+from langgraph.prebuilt import create_react_agent
+from langchain_core.tools import tool
+from typing import Any
+import config
 
 from tools.filesystem import create_folder, list_directory, read_file, delete_file
 from tools.shell import run_command, open_application
@@ -22,7 +24,7 @@ TOOLS = [
     search_web,
 ]
 
-SYSTEM_PROMPT = """You are a helpful Windows PC personal assistant running locally on the user's machine.
+SYSTEM_PROMPT = """You are a helpful Windows PC personal assistant.
 
 You have access to powerful tools to help the user:
 - Run shell commands and scripts
@@ -37,7 +39,7 @@ RULES:
 3. When running commands, show the output clearly
 4. If unsure about a file path, ask the user to confirm
 5. For web searches, summarize the top results clearly
-6. You are running 100% locally - no data leaves the machine
+6. Think step-by-step when executing complex tasks
 
 When a user says things like:
 - "what's my IP" → use get_system_info
@@ -49,28 +51,21 @@ When a user says things like:
 """
 
 
-def build_agent() -> AgentExecutor:
-    """Build and return the LangChain agent with all tools."""
+def build_agent() -> Any:
+    """Build and return the LangChain agent with all tools (Ollama - functionary-7b-v1)."""
+    
+    # Initialize Ollama model
     llm = ChatOllama(
-        model="llama3.1",
-        temperature=0,          # Deterministic responses for system tasks
-        num_predict=512,        # Max tokens per response
+        model=config.OLLAMA_MODEL,  # Reads from config.py
+        temperature=config.OLLAMA_TEMPERATURE,
+        num_predict=config.OLLAMA_MAX_TOKENS,
     )
+    
+    # Bind the system prompt to the model
+    llm_with_system = llm.bind(system=SYSTEM_PROMPT)
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT),
-        ("placeholder", "{chat_history}"),
-        ("human", "{input}"),
-        ("placeholder", "{agent_scratchpad}"),
-    ])
+    # Create the agent using langgraph's create_react_agent
+    # This returns a runnable that handles the ReAct loop internally
+    agent_executor = create_react_agent(llm_with_system, TOOLS)
 
-    agent = create_tool_calling_agent(llm, TOOLS, prompt)
-
-    return AgentExecutor(
-        agent=agent,
-        tools=TOOLS,
-        verbose=False,          # Set True to see agent reasoning steps
-        max_iterations=6,
-        handle_parsing_errors=True,
-        return_intermediate_steps=False,
-    )
+    return agent_executor

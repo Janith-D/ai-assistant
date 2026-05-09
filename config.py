@@ -2,19 +2,33 @@
 Configuration — Edit these settings to customize your assistant
 """
 
+import os
+
 # ─────────────────────────────────────────────
-# AI MODEL SETTINGS
+# AI MODEL SETTINGS (Ollama - Local, 100% Free)
 # ─────────────────────────────────────────────
 
-# Ollama model to use (must be pulled first with: ollama pull <model>)
-# Options: llama3.1, mistral, phi3, qwen2.5
-OLLAMA_MODEL = "llama3.1"
+# ⚠️ IMPORTANT: Make sure Ollama is running!
+# Download from: https://ollama.ai
+# Start Ollama, then pull the model:
+#   ollama pull mistral:latest
+#
+# This model is:
+# - Supports function/tool calling (perfect for this project)
+# - ~5GB download, 6-7GB runtime (fits in 8GB RAM)
+# - Locally run (100% private, no data sent anywhere)
+
+# Ollama model to use
+# Best for tool calling: "mistral:latest" (proven tool support)
+# Alternatives: "dolphin-mixtral:8x7b" (excellent quality)
+OLLAMA_MODEL = "mistral:latest"  # Supports tool/function calling
 
 # Model temperature: 0 = focused/deterministic, 1 = creative
 OLLAMA_TEMPERATURE = 0
 
-# Max tokens in response
-OLLAMA_MAX_TOKENS = 512
+# Max tokens in response (lower = faster responses)
+# Recommended: 256 for functionary on 8GB RAM
+OLLAMA_MAX_TOKENS = 256
 
 # ─────────────────────────────────────────────
 # VOICE SETTINGS
