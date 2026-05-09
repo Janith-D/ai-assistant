@@ -1,0 +1,84 @@
+# Python Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+
+# Python Cache & Compiled Files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# IDE & Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.env.local
+.env.*.local
+
+# Project-Specific: Data & Logs
+data/conversations/
+data/audio/
+data/temp/
+logs/*.log
+memory/chroma_db/
+*.db
+
+# Project-Specific: Ollama Models (very large)
+models/
+ollama_cache/
+
+# Temporary Files
+*.tmp
+*.bak
+temp/
+temp_*.py
+
+# OS Files
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Node/Electron (for Phase 6+)
+electron-ui/node_modules/
+electron-ui/dist/
+electron-ui/build/
+npm-debug.log
+yarn-error.log
+
+# Environment Variables (keep secrets safe)
+.env
+.env.local
+.env.*.local
+
+# Coverage & Testing
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Lock Files (optional - include if you want reproducible installs)
+# Uncomment these if using poetry/pipenv
+# poetry.lock
+# Pipfile.lock
+
+# Visual Studio & Build
+.vs/
+*.user
+*.sln.docstates
+
+# Jupyter Notebooks (if added)
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Chatbot Conversation History (sensitive)
+conversations.json
+chat_history.json
