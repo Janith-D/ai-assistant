@@ -4,31 +4,31 @@ Configuration — Edit these settings to customize your assistant
 
 import os
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
+
 # ─────────────────────────────────────────────
-# AI MODEL SETTINGS (Ollama - Local, 100% Free)
+# AI MODEL SETTINGS (Google Gemini)
 # ─────────────────────────────────────────────
 
-# ⚠️ IMPORTANT: Make sure Ollama is running!
-# Download from: https://ollama.ai
-# Start Ollama, then pull the model:
-#   ollama pull mistral:latest
-#
-# This model is:
-# - Supports function/tool calling (perfect for this project)
-# - ~5GB download, 6-7GB runtime (fits in 8GB RAM)
-# - Locally run (100% private, no data sent anywhere)
+# Put your key in .env:
+# GOOGLE_API_KEY=your_key_here
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 
-# Ollama model to use
-# Best for tool calling: "mistral:latest" (proven tool support)
-# Alternatives: "dolphin-mixtral:8x7b" (excellent quality)
-OLLAMA_MODEL = "mistral:latest"  # Supports tool/function calling
+# Gemini model to use
+# Fast and smooth for development: "gemini-2.0-flash"
+# Higher quality: "gemini-2.0-pro"
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
 # Model temperature: 0 = focused/deterministic, 1 = creative
-OLLAMA_TEMPERATURE = 0
+GEMINI_TEMPERATURE = float(os.getenv("GEMINI_TEMPERATURE", "0"))
 
 # Max tokens in response (lower = faster responses)
-# Recommended: 256 for functionary on 8GB RAM
-OLLAMA_MAX_TOKENS = 256
+GEMINI_MAX_TOKENS = int(os.getenv("GEMINI_MAX_TOKENS", "256"))
 
 # ─────────────────────────────────────────────
 # VOICE SETTINGS
@@ -63,8 +63,6 @@ MEMORY_MAX_EXCHANGES = 10
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-
-import os
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")

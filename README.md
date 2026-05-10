@@ -1,19 +1,20 @@
 # 🤖 Personal AI Assistant
 
-A Windows AI assistant running 100% locally using Ollama + LangChain.
-No cloud. No API keys. No cost. Full privacy.
+A Windows AI assistant using Google Gemini + LangChain.
+Fast startup, smooth responses, and no local model load during development.
 
 ## Quick Start
 
 ```cmd
-# 1. Activate virtual environment
+# 1. Add your Gemini API key to .env
+#    GOOGLE_API_KEY=your_key_here
+#    GEMINI_MODEL=gemini-2.5-flash
+
+# 2. Activate virtual environment
 venv\Scripts\activate
 
-# 2. Install packages
+# 3. Install packages
 pip install -r requirements.txt
-
-# 3. Pull AI model (one time only)
-ollama pull llama3.1
 
 # 4. Run the assistant
 python main.py

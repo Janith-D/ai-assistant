@@ -2,7 +2,7 @@
 Web Search Tool - DuckDuckGo search (free, no API key needed)
 """
 
-from langchain.tools import tool
+from langchain_core.tools import tool
 
 
 @tool

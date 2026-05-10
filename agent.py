@@ -1,8 +1,8 @@
 """
-Agent Core - LangChain agent with tool calling via Ollama (Local, 100% Private)
+Agent Core - LangChain agent with tool calling via Google Gemini
 """
 
-from langchain_ollama import ChatOllama
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.prebuilt import create_react_agent
 from langchain_core.tools import tool
 from typing import Any
@@ -52,20 +52,20 @@ When a user says things like:
 
 
 def build_agent() -> Any:
-    """Build and return the LangChain agent with all tools (Ollama - functionary-7b-v1)."""
-    
-    # Initialize Ollama model
-    llm = ChatOllama(
-        model=config.OLLAMA_MODEL,  # Reads from config.py
-        temperature=config.OLLAMA_TEMPERATURE,
-        num_predict=config.OLLAMA_MAX_TOKENS,
-    )
-    
-    # Bind the system prompt to the model
-    llm_with_system = llm.bind(system=SYSTEM_PROMPT)
+    """Build and return the LangChain agent with all tools using Gemini."""
 
-    # Create the agent using langgraph's create_react_agent
-    # This returns a runnable that handles the ReAct loop internally
-    agent_executor = create_react_agent(llm_with_system, TOOLS)
+    if not config.GOOGLE_API_KEY:
+        raise ValueError(
+            "GOOGLE_API_KEY is missing. Add it to .env before starting the assistant."
+        )
+
+    llm = ChatGoogleGenerativeAI(
+        model=config.GEMINI_MODEL,
+        temperature=config.GEMINI_TEMPERATURE,
+        max_output_tokens=config.GEMINI_MAX_TOKENS,
+        google_api_key=config.GOOGLE_API_KEY,
+    )
+
+    agent_executor = create_react_agent(llm, TOOLS, prompt=SYSTEM_PROMPT)
 
     return agent_executor

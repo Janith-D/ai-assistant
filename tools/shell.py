@@ -4,7 +4,7 @@ Shell Tools - Run Windows commands and open applications
 
 import subprocess
 import os
-from langchain.tools import tool
+from langchain_core.tools import tool
 
 
 @tool

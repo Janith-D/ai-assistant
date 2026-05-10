@@ -4,7 +4,7 @@ System Info Tools - CPU, RAM, IP, Disk usage
 
 import socket
 import psutil
-from langchain.tools import tool
+from langchain_core.tools import tool
 
 
 @tool
