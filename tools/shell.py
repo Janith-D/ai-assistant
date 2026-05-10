@@ -4,7 +4,42 @@ Shell Tools - Run Windows commands and open applications
 
 import subprocess
 import os
+import shutil
 from langchain_core.tools import tool
+
+
+def _resolve_executable(executable: str) -> str:
+    """Resolve a runnable path for common Windows apps."""
+    executable_lower = executable.lower().strip()
+
+    browser_candidates = {
+        "chrome.exe": [
+            os.path.join(os.environ.get("ProgramFiles", ""), "Google", "Chrome", "Application", "chrome.exe"),
+            os.path.join(os.environ.get("ProgramFiles(x86)", ""), "Google", "Chrome", "Application", "chrome.exe"),
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome", "Application", "chrome.exe"),
+        ],
+        "msedge.exe": [
+            os.path.join(os.environ.get("ProgramFiles", ""), "Microsoft", "Edge", "Application", "msedge.exe"),
+            os.path.join(os.environ.get("ProgramFiles(x86)", ""), "Microsoft", "Edge", "Application", "msedge.exe"),
+        ],
+        "firefox.exe": [
+            os.path.join(os.environ.get("ProgramFiles", ""), "Mozilla Firefox", "firefox.exe"),
+            os.path.join(os.environ.get("ProgramFiles(x86)", ""), "Mozilla Firefox", "firefox.exe"),
+        ],
+    }
+
+    if os.path.isabs(executable) and os.path.exists(executable):
+        return executable
+
+    which = shutil.which(executable)
+    if which:
+        return which
+
+    for candidate in browser_candidates.get(executable_lower, []):
+        if candidate and os.path.exists(candidate):
+            return candidate
+
+    return executable
 
 
 @tool
@@ -65,9 +100,13 @@ def open_application(app_name: str) -> str:
 
     app_lower = app_name.lower().strip()
     executable = app_map.get(app_lower, app_name)
+    executable = _resolve_executable(executable)
 
     try:
-        subprocess.Popen(executable, shell=True)
+        if os.path.exists(executable):
+            subprocess.Popen([executable], shell=False)
+        else:
+            subprocess.Popen(executable, shell=True)
         return f"✅ Opened: {app_name}"
     except Exception as e:
         return f"❌ Could not open {app_name}: {e}"

@@ -40,8 +40,21 @@ GEMINI_MAX_TOKENS = int(os.getenv("GEMINI_MAX_TOKENS", "256"))
 # small = more accurate (~466MB)
 WHISPER_MODEL = "base"
 
-# Recording duration in seconds
-VOICE_DURATION = 5
+# Recording duration in seconds (target 1-3s capture latency)
+VOICE_DURATION = 3
+
+# Whisper expects 16kHz mono audio for best compatibility/performance.
+# (If you meant 26Hz, that is too low for speech recognition.)
+VOICE_SAMPLE_RATE = 16000
+
+# Lower beam size improves speed (1 is fastest).
+VOICE_BEAM_SIZE = 1
+
+# VAD silence threshold tuning (milliseconds)
+VOICE_VAD_MIN_SILENCE_MS = 400
+
+# If measured RMS is below this, treat input as silence.
+VOICE_SILENCE_RMS_THRESHOLD = 0.008
 
 # ─────────────────────────────────────────────
 # SAFETY SETTINGS
