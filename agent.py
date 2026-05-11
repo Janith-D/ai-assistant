@@ -8,7 +8,7 @@ from langchain_core.tools import tool
 from typing import Any
 import config
 
-from tools.filesystem import create_folder, list_directory, read_file, delete_file
+from tools.filesystem import create_folder, list_directory, read_file, delete_file, write_file, search_files
 from tools.shell import run_command, open_application
 from tools.system_info import get_system_info
 from tools.web_search import search_web
@@ -20,6 +20,8 @@ TOOLS = [
     list_directory,
     read_file,
     delete_file,
+    write_file,
+    search_files,
     get_system_info,
     search_web,
 ]

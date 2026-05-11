@@ -9,7 +9,7 @@ from rich.prompt import Prompt
 from langchain_core.messages import HumanMessage, AIMessage
 import config
 from agent import build_agent
-from tools.filesystem import create_folder, list_directory, delete_file
+from tools.filesystem import create_folder, list_directory, delete_file, read_file, write_file, search_files
 from tools.system_info import get_system_info
 from tools.shell import open_application
 import json
@@ -17,11 +17,24 @@ import os
 import re
 from datetime import datetime
 import time
+from queue import Queue
+import threading
 
 console = Console()
 chat_history = []
 
 DANGEROUS_KEYWORDS = ["delete", "remove", "format", "rm -rf", "del ", "rmdir"]
+
+
+def maybe_speak(text: str) -> None:
+    """Best-effort TTS playback for assistant responses when enabled."""
+    try:
+        from voice.tts import speak_text
+
+        # Avoid reading very long payloads aloud.
+        speak_text((text or "")[:600])
+    except Exception:
+        return
 
 
 def is_dangerous(text: str) -> bool:
@@ -155,6 +168,62 @@ def resolve_open_path_target(user_input: str) -> str | None:
     return None
 
 
+def _resolve_special_path(token: str) -> str:
+    t = token.strip().strip('"\'')
+    lower = t.lower()
+    home = os.path.expanduser("~")
+    mapping = {
+        "desktop": os.path.join(home, "Desktop"),
+        "downloads": os.path.join(home, "Downloads"),
+        "documents": os.path.join(home, "Documents"),
+        "pictures": os.path.join(home, "Pictures"),
+    }
+    return mapping.get(lower, os.path.expandvars(os.path.expanduser(t)))
+
+
+def resolve_read_file_target(user_input: str) -> str | None:
+    text = user_input.strip()
+    lower = text.lower()
+    if not lower.startswith("read file"):
+        return None
+
+    quoted = re.search(r"['\"]([^'\"]+)['\"]", text)
+    if quoted:
+        return _resolve_special_path(quoted.group(1))
+
+    path = text[len("read file"):].strip()
+    return _resolve_special_path(path) if path else None
+
+
+def resolve_write_file_request(user_input: str) -> tuple[str, str] | None:
+    text = user_input.strip()
+    # Supported format:
+    # write file <path> :: <content>
+    match = re.match(r"(?i)^write\s+file\s+(.+?)\s*::\s*(.+)$", text)
+    if not match:
+        return None
+    path = _resolve_special_path(match.group(1))
+    content = match.group(2)
+    if not path or not content:
+        return None
+    return (path, content)
+
+
+def resolve_search_files_request(user_input: str) -> tuple[str, str] | None:
+    text = user_input.strip()
+    # Supported formats:
+    # search files <pattern> in <path>
+    # find files <pattern> in <path>
+    match = re.match(r"(?i)^(?:search|find)\s+files\s+(.+?)\s+in\s+(.+)$", text)
+    if not match:
+        return None
+    pattern = match.group(1).strip().strip('"\'')
+    root = _resolve_special_path(match.group(2))
+    if not pattern or not root:
+        return None
+    return (root, pattern)
+
+
 def open_path_local(path_or_sentinel: str) -> str:
     """Open an existing file/folder path locally on Windows."""
     try:
@@ -243,7 +312,11 @@ def local_help_text() -> str:
         "- Time/date: current time, current date\n"
         "- System info: ram, cpu, disk, ip address\n"
         "- Files: create folder ... on desktop, list files on desktop, delete folder ... on desktop\n"
-        "- Voice mode: type voice\n"
+        "- Read file: read file <path>\n"
+        "- Write file: write file <path> :: <content>\n"
+        "- Search files: search files <pattern> in <path>\n"
+        "- Voice mode: type voice (manual)\n"
+        "- Push-to-talk: type ptt\n"
         "- Exit: type exit"
     )
 
@@ -261,6 +334,126 @@ def main():
     agent = build_agent()
     console.print("[green]✓ Agent ready! Ask me anything.\n[/green]")
 
+    # Warm up STT model once at startup so users do not need to run stt.py manually.
+    try:
+        from voice.stt import preload_model
+
+        with console.status("[cyan]🎙 Initializing voice STT model...[/cyan]"):
+            preload = preload_model()
+        if preload.ok:
+            console.print("[dim]Voice STT ready[/dim]")
+        else:
+            console.print(f"[yellow]Voice STT preload issue: {preload.message}[/yellow]")
+    except Exception as e:
+        console.print(f"[yellow]Voice STT not initialized: {e}[/yellow]")
+
+    wake_enabled = str(getattr(config, "WAKEWORD_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"}
+
+    # Start wake-word service (background) only when explicitly enabled.
+    wake_queue = Queue()
+
+    def on_wake():
+        try:
+            wake_queue.put_nowait(True)
+        except Exception:
+            pass
+
+    if wake_enabled:
+        try:
+            from voice.wake import start_wake_service, stop_wake_service
+
+            try:
+                start_wake_service(on_wake)
+                console.print("[dim]Wake-word service started (say '{}')[/dim]".format(config.WAKEWORD_PHRASE))
+            except Exception as e:
+                console.print(f"[yellow]Wake service not started: {e}[/yellow]")
+        except ImportError:
+            console.print("[yellow]Wake module not available. Install 'vosk' and 'sounddevice' to enable wake-word.[/yellow]")
+    else:
+        console.print("[dim]Wake-word service disabled. Type 'voice' to speak a command.[/dim]")
+
+    def _wake_handler():
+        from voice.stt import listen_async
+        while True:
+            try:
+                wake_queue.get()
+                console.print("[cyan]🎧 Wake word detected. Speak your command now...[/cyan]")
+                post_delay_ms = int(getattr(config, "WAKE_POST_TRIGGER_DELAY_MS", 500))
+                if post_delay_ms > 0:
+                    time.sleep(post_delay_ms / 1000.0)
+                # On wake, capture audio and transcribe, then inject into agent flow
+                duration = int(getattr(config, "WAKE_COMMAND_DURATION", getattr(config, "VOICE_DURATION", 3)))
+                retry_duration = int(getattr(config, "WAKE_RETRY_DURATION", max(duration + 1, 5)))
+                samplerate = int(getattr(config, "VOICE_SAMPLE_RATE", 16000))
+                voice_future = listen_async(duration=duration, samplerate=samplerate)
+                # wait for result
+                voice_result = voice_future.result()
+                # Retry once if user paused after wake phrase and first capture is silent.
+                if (not voice_result.ok) and voice_result.code == "silent_audio":
+                    console.print("[yellow]I heard the wake word, but not the command. Please say it again...[/yellow]")
+                    voice_future = listen_async(duration=retry_duration, samplerate=samplerate)
+                    voice_result = voice_future.result()
+                if not voice_result.ok:
+                    console.print(f"[yellow]Wake voice capture failed: {voice_result.code} - {voice_result.message}[/yellow]")
+                    continue
+                spoken = voice_result.text
+                if spoken:
+                    console.print(f"[green]📝 You (via wake):[/green] {spoken}")
+                    # run through agent
+                    response = agent.invoke({"messages": chat_history + [HumanMessage(spoken)]})
+                    # same extraction logic as below
+                    def _extract_text(obj):
+                        if hasattr(obj, 'content'):
+                            obj = obj.content
+                        if isinstance(obj, str):
+                            return obj
+                        if isinstance(obj, dict):
+                            if 'text' in obj and isinstance(obj['text'], str):
+                                return obj['text']
+                            if 'message' in obj and isinstance(obj['message'], str):
+                                return obj['message']
+                            return json.dumps(obj, ensure_ascii=False, indent=2)
+                        if isinstance(obj, (list, tuple)):
+                            parts = []
+                            for el in obj:
+                                if isinstance(el, str):
+                                    parts.append(el)
+                                elif isinstance(el, dict) and 'text' in el:
+                                    parts.append(el['text'])
+                                elif hasattr(el, 'content'):
+                                    parts.append(str(el.content))
+                                else:
+                                    parts.append(json.dumps(el, ensure_ascii=False))
+                            return "\n\n".join(parts)
+                        try:
+                            return str(obj)
+                        except Exception:
+                            return json.dumps(obj, ensure_ascii=False, default=str)
+
+                    if isinstance(response, dict) and "messages" in response:
+                        last_message = response["messages"][-1]
+                        answer = _extract_text(last_message)
+                    else:
+                        answer = _extract_text(response)
+
+                    console.print(Panel(
+                        answer,
+                        title="[bold cyan]🤖 Assistant[/bold cyan]",
+                        border_style="cyan"
+                    ))
+                    console.print()
+                    maybe_speak(answer)
+                    chat_history.append(HumanMessage(spoken))
+                    chat_history.append(AIMessage(answer))
+                else:
+                    console.print("[yellow]Wake triggered, but no speech was recognized.[/yellow]")
+            except Exception as e:
+                console.print(f"[yellow]Wake handler error: {e}[/yellow]")
+                time.sleep(0.5)
+
+    if wake_enabled:
+        threading.Thread(target=_wake_handler, daemon=True).start()
+
     while True:
         try:
             user_input = Prompt.ask("[bold yellow]You[/bold yellow]").strip()
@@ -273,17 +466,34 @@ def main():
                 break
 
             # Voice mode toggle
-            if user_input.lower() == "voice":
+            if user_input.lower() in {"voice", "ptt"}:
                 try:
-                    from voice.stt import listen_async
+                    from voice.stt import listen_async, listen_push_to_talk
+                    is_manual_voice = user_input.lower() == "voice"
 
-                    duration = int(getattr(config, "VOICE_DURATION", 3))
-                    samplerate = int(getattr(config, "VOICE_SAMPLE_RATE", 16000))
-                    with console.status("[cyan]🎤 Listening and transcribing in background...[/cyan]"):
-                        voice_future = listen_async(duration=duration, samplerate=samplerate)
-                        while not voice_future.done():
-                            time.sleep(0.05)
-                        voice_result = voice_future.result()
+                    if user_input.lower() == "ptt":
+                        with console.status("[cyan]🎤 Push-to-talk mode...[/cyan]"):
+                            voice_result = listen_push_to_talk()
+                    else:
+                        duration = int(getattr(config, "VOICE_DURATION", 3))
+                        retry_duration = int(getattr(config, "VOICE_RETRY_DURATION", max(duration + 2, 5)))
+                        samplerate = int(getattr(config, "VOICE_SAMPLE_RATE", 16000))
+                        console.print("[cyan]🎤 Speak now...[/cyan]")
+                        with console.status("[cyan]🎤 Listening and transcribing in background...[/cyan]"):
+                            voice_future = listen_async(duration=duration, samplerate=samplerate)
+                            while not voice_future.done():
+                                time.sleep(0.05)
+                            voice_result = voice_future.result()
+
+                        # Retry once for manual voice if first capture was silent.
+                        if (not voice_result.ok) and voice_result.code == "silent_audio" and is_manual_voice:
+                            console.print("[yellow]I couldn't hear that clearly. Please say your command again...[/yellow]")
+                            console.print("[cyan]🎤 Speak now...[/cyan]")
+                            with console.status("[cyan]🎤 Retrying voice capture...[/cyan]"):
+                                voice_future = listen_async(duration=retry_duration, samplerate=samplerate)
+                                while not voice_future.done():
+                                    time.sleep(0.05)
+                                voice_result = voice_future.result()
 
                     if not voice_result.ok:
                         code = voice_result.code
@@ -335,6 +545,7 @@ def main():
                         border_style="cyan"
                     ))
                     console.print()
+                    maybe_speak(delete_result)
 
                     chat_history.append(HumanMessage(user_input))
                     chat_history.append(AIMessage(delete_result))
@@ -355,6 +566,7 @@ def main():
                     border_style="cyan"
                 ))
                 console.print()
+                maybe_speak(create_result)
 
                 chat_history.append(HumanMessage(user_input))
                 chat_history.append(AIMessage(create_result))
@@ -375,9 +587,75 @@ def main():
                     border_style="cyan"
                 ))
                 console.print()
+                maybe_speak(list_result)
 
                 chat_history.append(HumanMessage(user_input))
                 chat_history.append(AIMessage(list_result))
+                if len(chat_history) > 20:
+                    chat_history.pop(0)
+                    chat_history.pop(0)
+                continue
+
+            # Handle file read locally.
+            read_target = resolve_read_file_target(user_input)
+            if read_target:
+                with console.status("[cyan]📄 Reading file locally...[/cyan]"):
+                    read_result = read_file.invoke(read_target)
+
+                console.print(Panel(
+                    read_result,
+                    title="[bold cyan]🤖 Assistant[/bold cyan]",
+                    border_style="cyan"
+                ))
+                console.print()
+                maybe_speak(read_result)
+
+                chat_history.append(HumanMessage(user_input))
+                chat_history.append(AIMessage(read_result))
+                if len(chat_history) > 20:
+                    chat_history.pop(0)
+                    chat_history.pop(0)
+                continue
+
+            # Handle file write locally.
+            write_req = resolve_write_file_request(user_input)
+            if write_req:
+                path, content = write_req
+                with console.status("[cyan]📝 Writing file locally...[/cyan]"):
+                    write_result = write_file.invoke({"path": path, "content": content})
+
+                console.print(Panel(
+                    write_result,
+                    title="[bold cyan]🤖 Assistant[/bold cyan]",
+                    border_style="cyan"
+                ))
+                console.print()
+                maybe_speak(write_result)
+
+                chat_history.append(HumanMessage(user_input))
+                chat_history.append(AIMessage(write_result))
+                if len(chat_history) > 20:
+                    chat_history.pop(0)
+                    chat_history.pop(0)
+                continue
+
+            # Handle file search locally.
+            search_req = resolve_search_files_request(user_input)
+            if search_req:
+                root, pattern = search_req
+                with console.status("[cyan]🔎 Searching files locally...[/cyan]"):
+                    search_result = search_files.invoke({"root_path": root, "pattern": pattern})
+
+                console.print(Panel(
+                    search_result,
+                    title="[bold cyan]🤖 Assistant[/bold cyan]",
+                    border_style="cyan"
+                ))
+                console.print()
+                maybe_speak(search_result)
+
+                chat_history.append(HumanMessage(user_input))
+                chat_history.append(AIMessage(search_result))
                 if len(chat_history) > 20:
                     chat_history.pop(0)
                     chat_history.pop(0)
@@ -392,6 +670,7 @@ def main():
                     border_style="cyan"
                 ))
                 console.print()
+                maybe_speak(time_date)
 
                 chat_history.append(HumanMessage(user_input))
                 chat_history.append(AIMessage(time_date))
@@ -412,6 +691,7 @@ def main():
                     border_style="cyan"
                 ))
                 console.print()
+                maybe_speak(open_path_result)
 
                 chat_history.append(HumanMessage(user_input))
                 chat_history.append(AIMessage(open_path_result))
@@ -432,6 +712,7 @@ def main():
                     border_style="cyan"
                 ))
                 console.print()
+                maybe_speak(open_result)
 
                 chat_history.append(HumanMessage(user_input))
                 chat_history.append(AIMessage(open_result))
@@ -450,6 +731,7 @@ def main():
                         border_style="cyan"
                     ))
                     console.print()
+                    maybe_speak(local_info)
 
                     chat_history.append(HumanMessage(user_input))
                     chat_history.append(AIMessage(local_info))
@@ -466,6 +748,7 @@ def main():
                     border_style="cyan"
                 ))
                 console.print()
+                maybe_speak(help_text)
 
                 chat_history.append(HumanMessage(user_input))
                 chat_history.append(AIMessage(help_text))
@@ -532,6 +815,7 @@ def main():
                 border_style="cyan"
             ))
             console.print()
+            maybe_speak(answer)
 
             # Update conversation memory
             chat_history.append(HumanMessage(user_input))

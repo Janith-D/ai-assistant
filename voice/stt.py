@@ -10,6 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, asdict
 from typing import Optional
+import threading
 
 _WHISPER_MODEL = None
 _VOICE_EXECUTOR = ThreadPoolExecutor(max_workers=1)
@@ -83,6 +84,38 @@ def _get_settings(duration: Optional[int], samplerate: Optional[int]):
     }
 
 
+def _resolve_input_device(sd_module):
+    """Pick input device in this order: configured -> default -> first valid."""
+    try:
+        import config
+        devices = sd_module.query_devices()
+
+        # 1) Explicit config index
+        raw = str(getattr(config, "VOICE_INPUT_DEVICE", "")).strip()
+        if raw:
+            idx = int(raw)
+            if 0 <= idx < len(devices) and (devices[idx].get("max_input_channels", 0) or 0) > 0:
+                return idx
+
+        # 2) PortAudio default input index
+        default_input = None
+        try:
+            default_input = sd_module.default.device[0]
+        except Exception:
+            default_input = None
+        if isinstance(default_input, int) and 0 <= default_input < len(devices):
+            if (devices[default_input].get("max_input_channels", 0) or 0) > 0:
+                return default_input
+
+        # 3) First input-capable device
+        for i, d in enumerate(devices):
+            if (d.get("max_input_channels", 0) or 0) > 0:
+                return i
+    except Exception:
+        return None
+    return None
+
+
 def listen_with_meta(duration: Optional[int] = None, samplerate: Optional[int] = None) -> VoiceResult:
     """Record from mic and transcribe with robust errors + latency metadata."""
     settings = _get_settings(duration, samplerate)
@@ -133,6 +166,8 @@ def listen_with_meta(duration: Optional[int] = None, samplerate: Optional[int] =
             total_ms=int((time.perf_counter() - t0) * 1000),
         )
 
+    input_device = _resolve_input_device(sd)
+
     try:
         # Capture
         capture_start = time.perf_counter()
@@ -141,6 +176,7 @@ def listen_with_meta(duration: Optional[int] = None, samplerate: Optional[int] =
             samplerate=samplerate,
             channels=1,
             dtype="float32",
+            device=input_device,
         )
         sd.wait()
         capture_ms = int((time.perf_counter() - capture_start) * 1000)
@@ -256,6 +292,122 @@ def listen(duration: Optional[int] = None, samplerate: Optional[int] = None) -> 
 
     print(f"❌ {result.message}")
     return ""
+
+
+def listen_push_to_talk(samplerate: Optional[int] = None, max_seconds: int = 15) -> VoiceResult:
+    """Push-to-talk capture: press Enter to start and Enter to stop recording."""
+    settings = _get_settings(duration=3, samplerate=samplerate)
+    sr = settings["samplerate"]
+    t0 = time.perf_counter()
+
+    try:
+        import sounddevice as sd
+        import numpy as np
+        from scipy.io.wavfile import write
+    except ImportError as e:
+        return VoiceResult(
+            ok=False,
+            code="missing_dependency",
+            message=f"Missing dependency: {e}",
+            total_ms=int((time.perf_counter() - t0) * 1000),
+        )
+
+    input_device = _resolve_input_device(sd)
+    print("🎙 Push-to-talk: press Enter to start recording.")
+    input()
+
+    # Start async recording with hard max timeout protection.
+    frames_total = int(max_seconds * sr)
+    capture_start = time.perf_counter()
+    recording = sd.rec(
+        frames_total,
+        samplerate=sr,
+        channels=1,
+        dtype="float32",
+        device=input_device,
+    )
+
+    print("🔴 Recording... speak now, then press Enter to stop.")
+    input()
+    sd.stop()
+    capture_ms = int((time.perf_counter() - capture_start) * 1000)
+
+    # Use only the actually recorded portion.
+    actual_samples = max(1, min(frames_total, int((capture_ms / 1000.0) * sr)))
+    audio = recording[:actual_samples]
+
+    rms = float((audio ** 2).mean() ** 0.5)
+    if rms < settings["silence_rms"]:
+        return VoiceResult(
+            ok=False,
+            code="silent_audio",
+            message="No clear speech detected in push-to-talk recording.",
+            capture_ms=capture_ms,
+            total_ms=int((time.perf_counter() - t0) * 1000),
+        )
+
+    tmp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp_path = tmp.name
+            wav_audio = np.clip(audio, -1.0, 1.0)
+            wav_audio = (wav_audio * 32767).astype("int16")
+            write(tmp_path, sr, wav_audio)
+
+        transcribe_start = time.perf_counter()
+        model = _get_whisper_model()
+        segments, _ = model.transcribe(
+            tmp_path,
+            beam_size=settings["beam_size"],
+            temperature=0.0,
+            condition_on_previous_text=False,
+            vad_filter=True,
+            vad_parameters={"min_silence_duration_ms": settings["min_silence_ms"]},
+        )
+        transcribe_ms = int((time.perf_counter() - transcribe_start) * 1000)
+
+        cleaned_parts = []
+        for segment in segments:
+            part = segment.text.strip()
+            if not part:
+                continue
+            if re.fullmatch(r"[\W_\.\-\s]+", part):
+                continue
+            cleaned_parts.append(part)
+
+        text = " ".join(cleaned_parts).strip()
+        if not text:
+            return VoiceResult(
+                ok=False,
+                code="silent_audio",
+                message="Could not hear anything clearly in push-to-talk recording.",
+                capture_ms=capture_ms,
+                transcribe_ms=transcribe_ms,
+                total_ms=int((time.perf_counter() - t0) * 1000),
+            )
+
+        return VoiceResult(
+            ok=True,
+            text=text,
+            code="ok",
+            message="Push-to-talk transcription successful",
+            capture_ms=capture_ms,
+            transcribe_ms=transcribe_ms,
+            total_ms=int((time.perf_counter() - t0) * 1000),
+        )
+    except Exception as e:
+        return VoiceResult(
+            ok=False,
+            code="voice_error",
+            message=str(e),
+            total_ms=int((time.perf_counter() - t0) * 1000),
+        )
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":

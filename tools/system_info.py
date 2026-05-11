@@ -5,6 +5,9 @@ System Info Tools - CPU, RAM, IP, Disk usage
 import socket
 import psutil
 from langchain_core.tools import tool
+from datetime import datetime
+import json
+import config
 
 
 @tool
@@ -13,6 +16,13 @@ def get_system_info(query: str = "all") -> str:
     Query can be: 'ip', 'ram', 'cpu', 'disk', or 'all'
     Example: get_system_info('ip') or get_system_info('all')"""
     try:
+        # Log tool usage
+        try:
+            os.makedirs(config.LOGS_DIR, exist_ok=True)
+            with open(config.LOGS_DIR + "/tool_calls.log", "a", encoding="utf-8") as lf:
+                lf.write(f"{datetime.utcnow().isoformat()} - get_system_info - {json.dumps({'query': query})}\n")
+        except Exception:
+            pass
         info = {}
 
         # IP Address

@@ -6,6 +6,10 @@ import subprocess
 import os
 import shutil
 from langchain_core.tools import tool
+import config
+import os
+import json
+from datetime import datetime
 
 
 def _resolve_executable(executable: str) -> str:
@@ -48,6 +52,13 @@ def run_command(command: str) -> str:
     Use for: ipconfig, ping, tasklist, dir, systeminfo, etc.
     Example: run_command('ipconfig') or run_command('ping google.com -n 2')"""
     try:
+        # Log tool usage
+        try:
+            os.makedirs(config.LOGS_DIR, exist_ok=True)
+            with open(config.LOGS_DIR + "/tool_calls.log", "a", encoding="utf-8") as lf:
+                lf.write(f"{datetime.utcnow().isoformat()} - run_command - {json.dumps({'command': command})}\n")
+        except Exception:
+            pass
         result = subprocess.run(
             command,
             shell=True,
@@ -103,6 +114,13 @@ def open_application(app_name: str) -> str:
     executable = _resolve_executable(executable)
 
     try:
+        # Log tool usage
+        try:
+            os.makedirs(config.LOGS_DIR, exist_ok=True)
+            with open(config.LOGS_DIR + "/tool_calls.log", "a", encoding="utf-8") as lf:
+                lf.write(f"{datetime.utcnow().isoformat()} - open_application - {json.dumps({'app': app_name})}\n")
+        except Exception:
+            pass
         if os.path.exists(executable):
             subprocess.Popen([executable], shell=False)
         else:
