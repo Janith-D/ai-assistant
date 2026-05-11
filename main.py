@@ -472,8 +472,7 @@ def main():
                     is_manual_voice = user_input.lower() == "voice"
 
                     if user_input.lower() == "ptt":
-                        with console.status("[cyan]🎤 Push-to-talk mode...[/cyan]"):
-                            voice_result = listen_push_to_talk()
+                        voice_result = listen_push_to_talk()
                     else:
                         duration = int(getattr(config, "VOICE_DURATION", 3))
                         retry_duration = int(getattr(config, "VOICE_RETRY_DURATION", max(duration + 2, 5)))

@@ -295,7 +295,10 @@ def listen(duration: Optional[int] = None, samplerate: Optional[int] = None) -> 
 
 
 def listen_push_to_talk(samplerate: Optional[int] = None, max_seconds: int = 15) -> VoiceResult:
-    """Push-to-talk capture: press Enter to start and Enter to stop recording."""
+    """Push-to-talk capture: press Enter to start and Enter to stop recording.
+
+    If the user does not press Enter to stop, capture auto-stops at `max_seconds`.
+    """
     settings = _get_settings(duration=3, samplerate=samplerate)
     sr = settings["samplerate"]
     t0 = time.perf_counter()
@@ -316,25 +319,59 @@ def listen_push_to_talk(samplerate: Optional[int] = None, max_seconds: int = 15)
     print("🎙 Push-to-talk: press Enter to start recording.")
     input()
 
-    # Start async recording with hard max timeout protection.
-    frames_total = int(max_seconds * sr)
-    capture_start = time.perf_counter()
-    recording = sd.rec(
-        frames_total,
-        samplerate=sr,
-        channels=1,
-        dtype="float32",
-        device=input_device,
-    )
+    frames = []
+    stop_event = threading.Event()
+
+    def _callback(indata, _frames, _time, _status):
+        if _status:
+            pass
+        frames.append(indata.copy())
+
+    def _wait_stop_key():
+        # Wait for user Enter key to stop capture.
+        try:
+            input()
+        except Exception:
+            pass
+        stop_event.set()
 
     print("🔴 Recording... speak now, then press Enter to stop.")
-    input()
-    sd.stop()
+    stopper = threading.Thread(target=_wait_stop_key, daemon=True)
+    stopper.start()
+
+    capture_start = time.perf_counter()
+    try:
+        with sd.InputStream(
+            samplerate=sr,
+            channels=1,
+            dtype="float32",
+            callback=_callback,
+            device=input_device,
+        ):
+            while not stop_event.is_set():
+                if (time.perf_counter() - capture_start) >= max_seconds:
+                    break
+                time.sleep(0.05)
+    except Exception as e:
+        return VoiceResult(
+            ok=False,
+            code="voice_error",
+            message=f"PTT capture failed: {e}",
+            total_ms=int((time.perf_counter() - t0) * 1000),
+        )
+
     capture_ms = int((time.perf_counter() - capture_start) * 1000)
 
-    # Use only the actually recorded portion.
-    actual_samples = max(1, min(frames_total, int((capture_ms / 1000.0) * sr)))
-    audio = recording[:actual_samples]
+    if not frames:
+        return VoiceResult(
+            ok=False,
+            code="silent_audio",
+            message="No audio captured in push-to-talk mode.",
+            capture_ms=capture_ms,
+            total_ms=int((time.perf_counter() - t0) * 1000),
+        )
+
+    audio = np.concatenate(frames, axis=0)
 
     rms = float((audio ** 2).mean() ** 0.5)
     if rms < settings["silence_rms"]:
