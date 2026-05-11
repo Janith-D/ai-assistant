@@ -1,12 +1,14 @@
 """
-Agent Core - LangChain agent with tool calling via Ollama
+Agent Core - LangChain agent with tool calling via Google Gemini
 """
 
-from langchain_ollama import ChatOllama
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langgraph.prebuilt import create_react_agent
+from langchain_core.tools import tool
+from typing import Any
+import config
 
-from tools.filesystem import create_folder, list_directory, read_file, delete_file
+from tools.filesystem import create_folder, list_directory, read_file, delete_file, write_file, search_files
 from tools.shell import run_command, open_application
 from tools.system_info import get_system_info
 from tools.web_search import search_web
@@ -18,11 +20,13 @@ TOOLS = [
     list_directory,
     read_file,
     delete_file,
+    write_file,
+    search_files,
     get_system_info,
     search_web,
 ]
 
-SYSTEM_PROMPT = """You are a helpful Windows PC personal assistant running locally on the user's machine.
+SYSTEM_PROMPT = """You are a helpful Windows PC personal assistant.
 
 You have access to powerful tools to help the user:
 - Run shell commands and scripts
@@ -37,7 +41,7 @@ RULES:
 3. When running commands, show the output clearly
 4. If unsure about a file path, ask the user to confirm
 5. For web searches, summarize the top results clearly
-6. You are running 100% locally - no data leaves the machine
+6. Think step-by-step when executing complex tasks
 
 When a user says things like:
 - "what's my IP" → use get_system_info
@@ -49,28 +53,21 @@ When a user says things like:
 """
 
 
-def build_agent() -> AgentExecutor:
-    """Build and return the LangChain agent with all tools."""
-    llm = ChatOllama(
-        model="llama3.1",
-        temperature=0,          # Deterministic responses for system tasks
-        num_predict=512,        # Max tokens per response
+def build_agent() -> Any:
+    """Build and return the LangChain agent with all tools using Gemini."""
+
+    if not config.GOOGLE_API_KEY:
+        raise ValueError(
+            "GOOGLE_API_KEY is missing. Add it to .env before starting the assistant."
+        )
+
+    llm = ChatGoogleGenerativeAI(
+        model=config.GEMINI_MODEL,
+        temperature=config.GEMINI_TEMPERATURE,
+        max_output_tokens=config.GEMINI_MAX_TOKENS,
+        google_api_key=config.GOOGLE_API_KEY,
     )
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT),
-        ("placeholder", "{chat_history}"),
-        ("human", "{input}"),
-        ("placeholder", "{agent_scratchpad}"),
-    ])
+    agent_executor = create_react_agent(llm, TOOLS, prompt=SYSTEM_PROMPT)
 
-    agent = create_tool_calling_agent(llm, TOOLS, prompt)
-
-    return AgentExecutor(
-        agent=agent,
-        tools=TOOLS,
-        verbose=False,          # Set True to see agent reasoning steps
-        max_iterations=6,
-        handle_parsing_errors=True,
-        return_intermediate_steps=False,
-    )
+    return agent_executor
